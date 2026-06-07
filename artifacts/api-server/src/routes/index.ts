@@ -5,6 +5,7 @@ import notesRouter from "./notes";
 import aiRouter from "./ai";
 import savedRouter from "./saved";
 import dashboardRouter from "./dashboard";
+import pdfRouter from "./pdf";
 
 const router: IRouter = Router();
 
@@ -14,5 +15,6 @@ router.use(notesRouter);
 router.use(aiRouter);
 router.use(savedRouter);
 router.use(dashboardRouter);
+router.use(pdfRouter);
 
 export default router;
