@@ -1,44 +1,59 @@
-# [Project name]
+# StudyMate AI
 
-_Replace the heading above with the project's name, and this line with one sentence describing what this app does for users._
+A student productivity web app that transforms notes into AI-powered summaries, flashcards, exam questions, and MCQ quizzes.
 
 ## Run & Operate
 
 - `pnpm --filter @workspace/api-server run dev` — run the API server (port 5000)
+- `pnpm --filter @workspace/studymate-ai run dev` — run the frontend
 - `pnpm run typecheck` — full typecheck across all packages
 - `pnpm run build` — typecheck + build all packages
 - `pnpm --filter @workspace/api-spec run codegen` — regenerate API hooks and Zod schemas from the OpenAPI spec
 - `pnpm --filter @workspace/db run push` — push DB schema changes (dev only)
 - Required env: `DATABASE_URL` — Postgres connection string
+- Required env: `SESSION_SECRET` — JWT signing secret
 
 ## Stack
 
 - pnpm workspaces, Node.js 24, TypeScript 5.9
+- Frontend: React + Vite, wouter, TanStack Query, shadcn/ui, framer-motion
 - API: Express 5
 - DB: PostgreSQL + Drizzle ORM
+- Auth: JWT (bcryptjs + jsonwebtoken), stored in localStorage
 - Validation: Zod (`zod/v4`), `drizzle-zod`
 - API codegen: Orval (from OpenAPI spec)
 - Build: esbuild (CJS bundle)
 
 ## Where things live
 
-_Populate as you build — short repo map plus pointers to the source-of-truth file for DB schema, API contracts, theme files, etc._
+- `lib/api-spec/openapi.yaml` — source of truth for all API contracts
+- `lib/db/src/schema/` — DB schema (users, notes, saved_content)
+- `artifacts/api-server/src/routes/` — Express route handlers
+- `artifacts/api-server/src/middlewares/auth.ts` — JWT auth middleware
+- `artifacts/studymate-ai/src/` — React frontend
 
 ## Architecture decisions
 
-_Populate as you build — non-obvious choices a reader couldn't infer from the code (3-5 bullets)._
+- JWT auth stored in localStorage; token sent as `Authorization: Bearer` header on every API request
+- All AI generation endpoints return dummy data — each is a single POST to `/notes/:noteId/<type>` ready to be swapped for Gemini API calls
+- Saved content stored as JSON strings in a `content` text column — flexible enough to store any AI output shape
+- Auth middleware attached per-route (not globally) so the health endpoint stays public
+- Orval codegen strictly follows entity-shaped schema names (e.g. `NoteInput`) to avoid TS2308 collisions
 
 ## Product
 
-_Describe the high-level user-facing capabilities of this app once they exist._
-
-## User preferences
-
-_Populate as you build — explicit user instructions worth remembering across sessions._
+- **Home** — Landing page with feature highlights and CTA
+- **Login / Signup** — JWT-based auth with form validation
+- **Dashboard** — Stats overview (notes, saved items, generations) + recent notes
+- **Notes** — Create, list, view, and delete study notes (text content)
+- **AI Generation** — Per-note: Summary + key points, Exam questions, Flashcards (flip animation), MCQ Quiz (with score tracking)
+- **Saved** — All saved AI-generated content across all notes
 
 ## Gotchas
 
-_Populate as you build — sharp edges, "always run X before Y" rules._
+- After any OpenAPI spec change, run codegen before touching routes or frontend hooks
+- AI routes return dummy data — to connect Gemini, replace the response bodies in `artifacts/api-server/src/routes/ai.ts`
+- `pnpm --filter @workspace/db run push-force` if schema push fails with column conflicts
 
 ## Pointers
 
