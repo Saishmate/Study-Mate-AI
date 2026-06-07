@@ -8,94 +8,82 @@ if (!apiKey) {
 
 export const gemini = new GoogleGenAI({ apiKey: apiKey ?? "" });
 
-// gemini-2.0-flash has 15 RPM on the free tier vs 5 RPM for gemini-2.5-flash
-export const MODEL = "gemini-2.0-flash";
+export const MODEL = "gemini-2.5-flash";
 
-const RETRYABLE_CODES = new Set([429, 503]);
-const MAX_RETRIES = 3;
+// ── In-memory result cache ────────────────────────────────────────────────
+// Key: "<noteId>:<type>:<note.updatedAt.toISOString()>"
+// Auto-invalidates whenever the note is edited (updatedAt changes).
+const cache = new Map<string, unknown>();
+const MAX_CACHE_ENTRIES = 500;
 
-function extractRetryDelay(err: unknown): number {
-  try {
-    const msg = (err as Error).message ?? "";
-    // Gemini returns "Please retry in Xs" in the message
-    const match = msg.match(/retry in (\d+(?:\.\d+)?)/i);
-    if (match) return Math.min(parseFloat(match[1]) * 1000, 30000);
-  } catch {
-    // ignore
-  }
-  return 5000; // default 5s
+export function cacheKey(noteId: number, type: string, updatedAt: Date): string {
+  return `${noteId}:${type}:${updatedAt.toISOString()}`;
 }
 
-function isRetryableError(err: unknown): boolean {
-  try {
-    const msg = JSON.stringify(err);
-    return (
-      msg.includes('"code":429') ||
-      msg.includes('"code":503') ||
-      msg.includes("RESOURCE_EXHAUSTED") ||
-      msg.includes("UNAVAILABLE")
-    );
-  } catch {
-    return false;
-  }
+export function getCached<T>(key: string): T | undefined {
+  return cache.get(key) as T | undefined;
 }
 
+export function setCached(key: string, value: unknown): void {
+  if (cache.size >= MAX_CACHE_ENTRIES) {
+    // Evict the oldest entry
+    const first = cache.keys().next().value;
+    if (first !== undefined) cache.delete(first);
+  }
+  cache.set(key, value);
+}
+
+// ── Retry helpers ─────────────────────────────────────────────────────────
+const MAX_RETRIES = 2;
+
+function isRetryable(err: unknown): boolean {
+  const msg = JSON.stringify(err);
+  return msg.includes("UNAVAILABLE") || msg.includes('"code":503');
+}
+
+function retryDelay(err: unknown): number {
+  try {
+    const match = JSON.stringify(err).match(/"retryDelay":"(\d+)s"/);
+    if (match) return Math.min(parseInt(match[1]) * 1000, 15000);
+  } catch { /* ignore */ }
+  return 3000;
+}
+
+export function getGeminiErrorMessage(err: unknown): { status: number; message: string } {
+  const msg = JSON.stringify(err);
+  if (msg.includes("RESOURCE_EXHAUSTED") || msg.includes('"code":429')) {
+    const secs = msg.match(/"retryDelay":"(\d+)s"/)?.[1];
+    return {
+      status: 429,
+      message: `AI rate limit reached. Please wait ${secs ?? 60} seconds and try again.`,
+    };
+  }
+  if (msg.includes("UNAVAILABLE") || msg.includes('"code":503')) {
+    return { status: 503, message: "AI model is temporarily busy. Please try again in a moment." };
+  }
+  return { status: 500, message: "AI generation failed. Please try again." };
+}
+
+// ── Core generator ────────────────────────────────────────────────────────
 export async function generateJson<T>(prompt: string): Promise<T> {
   let lastErr: unknown;
-
-  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     if (attempt > 0) {
-      const delay = extractRetryDelay(lastErr) * attempt;
-      logger.info({ attempt, delay }, "Retrying Gemini request after delay");
-      await new Promise((r) => setTimeout(r, delay));
+      await new Promise((r) => setTimeout(r, retryDelay(lastErr) * attempt));
+      logger.info({ attempt }, "Retrying Gemini request");
     }
-
     try {
       const response = await gemini.models.generateContent({
         model: MODEL,
         contents: [{ role: "user", parts: [{ text: prompt }] }],
-        config: {
-          responseMimeType: "application/json",
-          maxOutputTokens: 8192,
-        },
+        config: { responseMimeType: "application/json" },
       });
-
-      const text = response.text ?? "";
-      return JSON.parse(text) as T;
+      return JSON.parse(response.text ?? "{}") as T;
     } catch (err) {
       lastErr = err;
-      if (!isRetryableError(err) || attempt === MAX_RETRIES - 1) {
-        throw err;
-      }
-      logger.warn({ err, attempt }, "Gemini retryable error — will retry");
+      if (!isRetryable(err) || attempt === MAX_RETRIES) throw err;
+      logger.warn({ attempt }, "Gemini 503 — retrying");
     }
   }
-
   throw lastErr;
-}
-
-export function getGeminiErrorMessage(err: unknown): { status: number; message: string } {
-  try {
-    const msg = (err as Error).message ?? "";
-
-    if (msg.includes("RESOURCE_EXHAUSTED") || msg.includes("429")) {
-      const retryMatch = msg.match(/retry in (\d+(?:\.\d+)?)s/i);
-      const waitSecs = retryMatch ? Math.ceil(parseFloat(retryMatch[1])) : 60;
-      return {
-        status: 429,
-        message: `The AI is temporarily rate-limited. Please wait ${waitSecs} seconds and try again.`,
-      };
-    }
-
-    if (msg.includes("UNAVAILABLE") || msg.includes("503")) {
-      return {
-        status: 503,
-        message: "The AI model is temporarily unavailable due to high demand. Please try again in a moment.",
-      };
-    }
-  } catch {
-    // ignore
-  }
-
-  return { status: 500, message: "AI generation failed. Please try again." };
 }
