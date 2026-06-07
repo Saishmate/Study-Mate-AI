@@ -4,64 +4,66 @@ import { Link, useParams } from "wouter";
 import { Button } from "@/components/ui/button";
 import { ArrowLeft, Sparkles, Loader2, Save, CheckCircle2 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useToast } from "@/hooks/use-toast";
 import { useQueryClient } from "@tanstack/react-query";
 
 export default function NoteSummary() {
   const params = useParams();
   const noteId = params.noteId ? parseInt(params.noteId) : 0;
-  
-  const { data: note, isLoading: noteLoading } = useGetNote(noteId, { 
-    query: { enabled: !!noteId, queryKey: getGetNoteQueryKey(noteId) } 
+
+  const { data: note, isLoading: noteLoading } = useGetNote(noteId, {
+    query: { enabled: !!noteId, queryKey: getGetNoteQueryKey(noteId) },
   });
-  
+
   const generateSummaryMutation = useGenerateSummary();
   const saveContentMutation = useSaveContent();
-  const [summaryData, setSummaryData] = useState<any>(null);
+  const [summaryData, setSummaryData] = useState<{ summary: string; keyPoints: string[] } | null>(null);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [isSaved, setIsSaved] = useState(false);
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
+  // Guard: fire the mutation exactly once when the note is loaded
+  const hasTriggered = useRef(false);
+
   useEffect(() => {
-    if (note && !summaryData && !generateSummaryMutation.isPending && !generateSummaryMutation.isSuccess) {
-      generateSummaryMutation.mutate(
-        { noteId },
-        {
-          onSuccess: (data) => setSummaryData(data),
-          onError: () => {
-            toast({
-              variant: "destructive",
-              title: "Generation failed",
-              description: "Failed to generate summary.",
-            });
-          }
-        }
-      );
-    }
-  }, [note, noteId, generateSummaryMutation, summaryData, toast]);
+    if (!note || hasTriggered.current) return;
+    hasTriggered.current = true;
+
+    generateSummaryMutation.mutate(
+      { noteId },
+      {
+        onSuccess: (data) => setSummaryData(data),
+        onError: (err: unknown) => {
+          const msg =
+            (err as { data?: { error?: string } })?.data?.error ??
+            "Failed to generate summary. Please try again.";
+          setErrorMsg(msg);
+          toast({ variant: "destructive", title: "Generation failed", description: msg });
+        },
+      }
+    );
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [note]);
 
   const handleSave = () => {
     if (!summaryData || !note) return;
-    
     saveContentMutation.mutate(
-      { 
+      {
         data: {
           noteId,
           type: "summary",
           title: `${note.title} - Summary`,
-          content: JSON.stringify(summaryData)
-        }
+          content: JSON.stringify(summaryData),
+        },
       },
       {
         onSuccess: () => {
           setIsSaved(true);
           queryClient.invalidateQueries({ queryKey: getListSavedQueryKey() });
-          toast({
-            title: "Saved successfully",
-            description: "Summary added to your saved content.",
-          });
-        }
+          toast({ title: "Saved successfully", description: "Summary added to your saved content." });
+        },
       }
     );
   };
@@ -84,8 +86,8 @@ export default function NoteSummary() {
             </div>
           </div>
           {summaryData && (
-            <Button 
-              variant={isSaved ? "secondary" : "default"} 
+            <Button
+              variant={isSaved ? "secondary" : "default"}
               onClick={handleSave}
               disabled={isSaved || saveContentMutation.isPending}
               data-testid="button-save-summary"
@@ -111,7 +113,7 @@ export default function NoteSummary() {
               </div>
               <h3 className="text-xl font-bold mb-2">Analyzing your notes...</h3>
               <p className="text-muted-foreground max-w-sm">
-                Our AI is reading your material, extracting key concepts, and generating a concise summary.
+                Gemini is reading your material and generating a concise summary.
               </p>
               <div className="mt-8 flex gap-2">
                 <div className="w-2 h-2 rounded-full bg-primary animate-bounce" style={{ animationDelay: "0ms" }} />
@@ -120,14 +122,42 @@ export default function NoteSummary() {
               </div>
             </CardContent>
           </Card>
+        ) : errorMsg ? (
+          <Card className="border-destructive/30 bg-destructive/5">
+            <CardContent className="flex flex-col items-center justify-center py-16 text-center gap-4">
+              <p className="text-destructive font-medium">{errorMsg}</p>
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setErrorMsg(null);
+                  hasTriggered.current = false;
+                  if (note) {
+                    hasTriggered.current = true;
+                    generateSummaryMutation.mutate(
+                      { noteId },
+                      {
+                        onSuccess: (data) => setSummaryData(data),
+                        onError: (err: unknown) => {
+                          const msg =
+                            (err as { data?: { error?: string } })?.data?.error ??
+                            "Failed to generate summary. Please try again.";
+                          setErrorMsg(msg);
+                        },
+                      }
+                    );
+                  }
+                }}
+              >
+                Try Again
+              </Button>
+            </CardContent>
+          </Card>
         ) : summaryData ? (
           <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
             <Card>
               <CardContent className="p-8">
                 <h3 className="text-sm font-bold uppercase tracking-wider text-muted-foreground mb-4">Core Summary</h3>
-                <div className="text-lg leading-relaxed text-foreground">
-                  {summaryData.summary}
-                </div>
+                <div className="text-lg leading-relaxed text-foreground">{summaryData.summary}</div>
               </CardContent>
             </Card>
 

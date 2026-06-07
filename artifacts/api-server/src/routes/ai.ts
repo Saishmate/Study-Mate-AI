@@ -8,28 +8,26 @@ import {
   GenerateQuizParams,
 } from "@workspace/api-zod";
 import { requireAuth, type AuthRequest } from "../middlewares/auth";
-import { generateJson } from "../lib/gemini";
+import { generateJson, getGeminiErrorMessage } from "../lib/gemini";
 
 const router: IRouter = Router();
+
+async function fetchNote(noteId: number, userId: number) {
+  const [note] = await db
+    .select()
+    .from(notesTable)
+    .where(and(eq(notesTable.id, noteId), eq(notesTable.userId, userId)));
+  return note ?? null;
+}
 
 // ── Summary ────────────────────────────────────────────────────────────────
 
 router.post("/notes/:noteId/summary", requireAuth, async (req: AuthRequest, res): Promise<void> => {
   const params = GenerateSummaryParams.safeParse(req.params);
-  if (!params.success) {
-    res.status(400).json({ error: params.error.message });
-    return;
-  }
+  if (!params.success) { res.status(400).json({ error: params.error.message }); return; }
 
-  const [note] = await db
-    .select()
-    .from(notesTable)
-    .where(and(eq(notesTable.id, params.data.noteId), eq(notesTable.userId, req.userId!)));
-
-  if (!note) {
-    res.status(404).json({ error: "Note not found" });
-    return;
-  }
+  const note = await fetchNote(params.data.noteId, req.userId!);
+  if (!note) { res.status(404).json({ error: "Note not found" }); return; }
 
   const prompt = `You are an expert study assistant. Read the following student notes and produce a study summary.
 
@@ -50,36 +48,25 @@ Rules:
 - keyPoints must be an array of 5–8 distinct, actionable bullet points derived from the actual notes content
 - Do not add anything outside the JSON object`;
 
-  type SummaryResult = { summary: string; keyPoints: string[] };
-
-  const result = await generateJson<SummaryResult>(prompt);
-
-  res.json({
-    noteId: note.id,
-    summary: result.summary,
-    keyPoints: result.keyPoints,
-    generatedAt: new Date().toISOString(),
-  });
+  try {
+    type R = { summary: string; keyPoints: string[] };
+    const result = await generateJson<R>(prompt);
+    res.json({ noteId: note.id, summary: result.summary, keyPoints: result.keyPoints, generatedAt: new Date().toISOString() });
+  } catch (err) {
+    req.log.error({ err }, "Gemini summary error");
+    const { status, message } = getGeminiErrorMessage(err);
+    res.status(status).json({ error: message });
+  }
 });
 
 // ── Exam Questions ─────────────────────────────────────────────────────────
 
 router.post("/notes/:noteId/questions", requireAuth, async (req: AuthRequest, res): Promise<void> => {
   const params = GenerateQuestionsParams.safeParse(req.params);
-  if (!params.success) {
-    res.status(400).json({ error: params.error.message });
-    return;
-  }
+  if (!params.success) { res.status(400).json({ error: params.error.message }); return; }
 
-  const [note] = await db
-    .select()
-    .from(notesTable)
-    .where(and(eq(notesTable.id, params.data.noteId), eq(notesTable.userId, req.userId!)));
-
-  if (!note) {
-    res.status(404).json({ error: "Note not found" });
-    return;
-  }
+  const note = await fetchNote(params.data.noteId, req.userId!);
+  if (!note) { res.status(404).json({ error: "Note not found" }); return; }
 
   const prompt = `You are an expert exam question writer. Read the following student notes and generate important exam questions.
 
@@ -89,7 +76,7 @@ ${note.subject ? `Subject: ${note.subject}` : ""}
 Notes content:
 ${note.content}
 
-Return a JSON array of exactly 5 exam questions using this shape:
+Return a JSON array of exactly 5 exam questions:
 [
   {
     "id": 1,
@@ -100,37 +87,30 @@ Return a JSON array of exactly 5 exam questions using this shape:
 ]
 
 Rules:
-- Questions must be directly derived from the actual notes content — do not invent topics not present
-- Mix difficulty levels: include at least one easy, two medium, and one hard question
-- Answers should be complete and educational, not just one word
-- Questions should test understanding and application, not just memorisation
+- Questions must be directly derived from the actual notes content
+- Mix difficulty: at least one easy, two medium, one hard
+- Answers should be complete and educational
 - Return only the JSON array, no surrounding text`;
 
-  type Question = { id: number; question: string; answer: string; difficulty: string };
-
-  const result = await generateJson<Question[]>(prompt);
-
-  res.json(result.map((q, i) => ({ ...q, id: i + 1 })));
+  try {
+    type Q = { id: number; question: string; answer: string; difficulty: string };
+    const result = await generateJson<Q[]>(prompt);
+    res.json(result.map((q, i) => ({ ...q, id: i + 1 })));
+  } catch (err) {
+    req.log.error({ err }, "Gemini questions error");
+    const { status, message } = getGeminiErrorMessage(err);
+    res.status(status).json({ error: message });
+  }
 });
 
 // ── Flashcards ─────────────────────────────────────────────────────────────
 
 router.post("/notes/:noteId/flashcards", requireAuth, async (req: AuthRequest, res): Promise<void> => {
   const params = GenerateFlashcardsParams.safeParse(req.params);
-  if (!params.success) {
-    res.status(400).json({ error: params.error.message });
-    return;
-  }
+  if (!params.success) { res.status(400).json({ error: params.error.message }); return; }
 
-  const [note] = await db
-    .select()
-    .from(notesTable)
-    .where(and(eq(notesTable.id, params.data.noteId), eq(notesTable.userId, req.userId!)));
-
-  if (!note) {
-    res.status(404).json({ error: "Note not found" });
-    return;
-  }
+  const note = await fetchNote(params.data.noteId, req.userId!);
+  if (!note) { res.status(404).json({ error: "Note not found" }); return; }
 
   const prompt = `You are an expert flashcard creator. Read the following student notes and generate study flashcards.
 
@@ -140,49 +120,40 @@ ${note.subject ? `Subject: ${note.subject}` : ""}
 Notes content:
 ${note.content}
 
-Return a JSON array of 6–10 flashcards using this shape:
+Return a JSON array of 6–10 flashcards:
 [
   {
     "id": 1,
     "front": "A concise question or term (one sentence max)",
     "back": "The answer or definition — clear and complete",
-    "topic": "The sub-topic this card belongs to (short label)"
+    "topic": "Sub-topic label"
   }
 ]
 
 Rules:
 - Each card must be based on actual content from the notes
-- Front side should be a specific question or key term/concept
-- Back side should be the answer or explanation — enough to understand without re-reading the notes
-- Group related cards under the same topic label
 - No duplicate concepts across cards
 - Return only the JSON array, no surrounding text`;
 
-  type Flashcard = { id: number; front: string; back: string; topic: string | null };
-
-  const result = await generateJson<Flashcard[]>(prompt);
-
-  res.json(result.map((c, i) => ({ ...c, id: i + 1 })));
+  try {
+    type C = { id: number; front: string; back: string; topic: string | null };
+    const result = await generateJson<C[]>(prompt);
+    res.json(result.map((c, i) => ({ ...c, id: i + 1 })));
+  } catch (err) {
+    req.log.error({ err }, "Gemini flashcards error");
+    const { status, message } = getGeminiErrorMessage(err);
+    res.status(status).json({ error: message });
+  }
 });
 
 // ── MCQ Quiz ───────────────────────────────────────────────────────────────
 
 router.post("/notes/:noteId/quiz", requireAuth, async (req: AuthRequest, res): Promise<void> => {
   const params = GenerateQuizParams.safeParse(req.params);
-  if (!params.success) {
-    res.status(400).json({ error: params.error.message });
-    return;
-  }
+  if (!params.success) { res.status(400).json({ error: params.error.message }); return; }
 
-  const [note] = await db
-    .select()
-    .from(notesTable)
-    .where(and(eq(notesTable.id, params.data.noteId), eq(notesTable.userId, req.userId!)));
-
-  if (!note) {
-    res.status(404).json({ error: "Note not found" });
-    return;
-  }
+  const note = await fetchNote(params.data.noteId, req.userId!);
+  if (!note) { res.status(404).json({ error: "Note not found" }); return; }
 
   const prompt = `You are an expert multiple-choice quiz creator. Read the following student notes and generate a quiz.
 
@@ -192,7 +163,7 @@ ${note.subject ? `Subject: ${note.subject}` : ""}
 Notes content:
 ${note.content}
 
-Return a JSON array of exactly 5 multiple-choice questions using this shape:
+Return a JSON array of exactly 5 multiple-choice questions:
 [
   {
     "id": 1,
@@ -206,23 +177,20 @@ Return a JSON array of exactly 5 multiple-choice questions using this shape:
 Rules:
 - All questions must be grounded in the actual notes content
 - Each question must have exactly 4 options
-- correctIndex is the 0-based index of the correct option in the options array
-- Incorrect options (distractors) must be plausible — not obviously wrong
-- explanation should clearly justify the correct answer
-- Vary the position of the correct answer — do not always put it at index 0 or 1
+- correctIndex is 0-based index of the correct option
+- Distractors must be plausible — not obviously wrong
+- Vary the position of the correct answer
 - Return only the JSON array, no surrounding text`;
 
-  type QuizQuestion = {
-    id: number;
-    question: string;
-    options: string[];
-    correctIndex: number;
-    explanation: string;
-  };
-
-  const result = await generateJson<QuizQuestion[]>(prompt);
-
-  res.json(result.map((q, i) => ({ ...q, id: i + 1 })));
+  try {
+    type QQ = { id: number; question: string; options: string[]; correctIndex: number; explanation: string };
+    const result = await generateJson<QQ[]>(prompt);
+    res.json(result.map((q, i) => ({ ...q, id: i + 1 })));
+  } catch (err) {
+    req.log.error({ err }, "Gemini quiz error");
+    const { status, message } = getGeminiErrorMessage(err);
+    res.status(status).json({ error: message });
+  }
 });
 
 export default router;

@@ -4,73 +4,85 @@ import { Link, useParams } from "wouter";
 import { Button } from "@/components/ui/button";
 import { ArrowLeft, PenTool, Loader2, Save, CheckCircle2, AlertCircle } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useToast } from "@/hooks/use-toast";
 import { useQueryClient } from "@tanstack/react-query";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Label } from "@/components/ui/label";
 
+type QuizQuestion = {
+  id: number;
+  question: string;
+  options: string[];
+  correctIndex: number;
+  explanation: string;
+};
+
 export default function NoteQuiz() {
   const params = useParams();
   const noteId = params.noteId ? parseInt(params.noteId) : 0;
-  
-  const { data: note, isLoading: noteLoading } = useGetNote(noteId, { 
-    query: { enabled: !!noteId, queryKey: getGetNoteQueryKey(noteId) } 
+
+  const { data: note, isLoading: noteLoading } = useGetNote(noteId, {
+    query: { enabled: !!noteId, queryKey: getGetNoteQueryKey(noteId) },
   });
-  
+
   const generateQuizMutation = useGenerateQuiz();
   const saveContentMutation = useSaveContent();
-  const [questions, setQuestions] = useState<any[]>([]);
-  
+  const [questions, setQuestions] = useState<QuizQuestion[]>([]);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
   const [currentIndex, setCurrentIndex] = useState(0);
   const [selectedOption, setSelectedOption] = useState<string | undefined>(undefined);
   const [isAnswered, setIsAnswered] = useState(false);
   const [score, setScore] = useState(0);
   const [isFinished, setIsFinished] = useState(false);
-  
+
   const [isSaved, setIsSaved] = useState(false);
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
+  const hasTriggered = useRef(false);
+
+  const runGenerate = () => {
+    generateQuizMutation.mutate(
+      { noteId },
+      {
+        onSuccess: (data) => setQuestions(data),
+        onError: (err: unknown) => {
+          const msg =
+            (err as { data?: { error?: string } })?.data?.error ??
+            "Failed to generate quiz. Please try again.";
+          setErrorMsg(msg);
+          toast({ variant: "destructive", title: "Generation failed", description: msg });
+        },
+      }
+    );
+  };
+
   useEffect(() => {
-    if (note && questions.length === 0 && !generateQuizMutation.isPending && !generateQuizMutation.isSuccess) {
-      generateQuizMutation.mutate(
-        { noteId },
-        {
-          onSuccess: (data) => setQuestions(data),
-          onError: () => {
-            toast({
-              variant: "destructive",
-              title: "Generation failed",
-              description: "Failed to generate quiz.",
-            });
-          }
-        }
-      );
-    }
-  }, [note, noteId, generateQuizMutation, questions.length, toast]);
+    if (!note || hasTriggered.current) return;
+    hasTriggered.current = true;
+    runGenerate();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [note]);
 
   const handleSave = () => {
     if (questions.length === 0 || !note) return;
-    
     saveContentMutation.mutate(
-      { 
+      {
         data: {
           noteId,
           type: "quiz",
           title: `${note.title} - Quiz`,
-          content: JSON.stringify(questions)
-        }
+          content: JSON.stringify(questions),
+        },
       },
       {
         onSuccess: () => {
           setIsSaved(true);
           queryClient.invalidateQueries({ queryKey: getListSavedQueryKey() });
-          toast({
-            title: "Saved successfully",
-            description: "Quiz added to your saved content.",
-          });
-        }
+          toast({ title: "Saved successfully", description: "Quiz added to your saved content." });
+        },
       }
     );
   };
@@ -82,18 +94,16 @@ export default function NoteQuiz() {
 
   const handleSubmitAnswer = () => {
     if (selectedOption === undefined) return;
-    
     setIsAnswered(true);
     const selectedIndex = parseInt(selectedOption);
-    
     if (selectedIndex === questions[currentIndex].correctIndex) {
-      setScore(prev => prev + 1);
+      setScore((prev) => prev + 1);
     }
   };
 
   const handleNextQuestion = () => {
     if (currentIndex < questions.length - 1) {
-      setCurrentIndex(prev => prev + 1);
+      setCurrentIndex((prev) => prev + 1);
       setSelectedOption(undefined);
       setIsAnswered(false);
     } else {
@@ -119,8 +129,8 @@ export default function NoteQuiz() {
             </div>
           </div>
           {questions.length > 0 && isFinished && (
-            <Button 
-              variant={isSaved ? "secondary" : "default"} 
+            <Button
+              variant={isSaved ? "secondary" : "default"}
               onClick={handleSave}
               disabled={isSaved || saveContentMutation.isPending}
               data-testid="button-save-quiz"
@@ -155,6 +165,22 @@ export default function NoteQuiz() {
               </div>
             </CardContent>
           </Card>
+        ) : errorMsg ? (
+          <Card className="border-destructive/30 bg-destructive/5">
+            <CardContent className="flex flex-col items-center justify-center py-16 text-center gap-4">
+              <p className="text-destructive font-medium">{errorMsg}</p>
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setErrorMsg(null);
+                  hasTriggered.current = true;
+                  runGenerate();
+                }}
+              >
+                Try Again
+              </Button>
+            </CardContent>
+          </Card>
         ) : questions.length > 0 ? (
           <div className="animate-in fade-in duration-500">
             {!isFinished ? (
@@ -163,11 +189,11 @@ export default function NoteQuiz() {
                   <span className="text-muted-foreground">Question {currentIndex + 1} of {questions.length}</span>
                   <span className="text-primary font-bold">Score: {score}</span>
                 </div>
-                
+
                 <div className="w-full bg-muted rounded-full h-2 overflow-hidden">
-                  <div 
+                  <div
                     className="bg-primary h-full transition-all duration-300"
-                    style={{ width: `${((currentIndex) / questions.length) * 100}%` }}
+                    style={{ width: `${(currentIndex / questions.length) * 100}%` }}
                   />
                 </div>
 
@@ -176,9 +202,9 @@ export default function NoteQuiz() {
                     <h3 className="text-xl md:text-2xl font-bold mb-8 leading-relaxed">
                       {questions[currentIndex].question}
                     </h3>
-                    
-                    <RadioGroup 
-                      value={selectedOption} 
+
+                    <RadioGroup
+                      value={selectedOption}
                       onValueChange={handleOptionSelect}
                       className="space-y-4"
                       disabled={isAnswered}
@@ -187,7 +213,7 @@ export default function NoteQuiz() {
                         const isSelected = selectedOption === idx.toString();
                         const isCorrect = isAnswered && idx === questions[currentIndex].correctIndex;
                         const isWrongSelection = isAnswered && isSelected && idx !== questions[currentIndex].correctIndex;
-                        
+
                         let optionClass = "border-2 rounded-xl p-4 flex items-start gap-3 cursor-pointer transition-all";
                         if (!isAnswered) {
                           optionClass += isSelected ? " border-primary bg-primary/5" : " border-border hover:border-primary/50";
@@ -198,16 +224,8 @@ export default function NoteQuiz() {
                         }
 
                         return (
-                          <Label 
-                            key={idx} 
-                            htmlFor={`option-${idx}`}
-                            className={optionClass}
-                          >
-                            <RadioGroupItem 
-                              value={idx.toString()} 
-                              id={`option-${idx}`} 
-                              className="mt-0.5"
-                            />
+                          <Label key={idx} htmlFor={`option-${idx}`} className={optionClass}>
+                            <RadioGroupItem value={idx.toString()} id={`option-${idx}`} className="mt-0.5" />
                             <span className="text-base font-medium leading-relaxed">{option}</span>
                           </Label>
                         );
@@ -225,23 +243,19 @@ export default function NoteQuiz() {
                     )}
                   </CardContent>
                 </Card>
-                
+
                 <div className="flex justify-end">
                   {!isAnswered ? (
-                    <Button 
-                      size="lg" 
-                      onClick={handleSubmitAnswer} 
+                    <Button
+                      size="lg"
+                      onClick={handleSubmitAnswer}
                       disabled={selectedOption === undefined}
                       data-testid="button-submit-answer"
                     >
                       Check Answer
                     </Button>
                   ) : (
-                    <Button 
-                      size="lg" 
-                      onClick={handleNextQuestion}
-                      data-testid="button-next-question"
-                    >
+                    <Button size="lg" onClick={handleNextQuestion} data-testid="button-next-question">
                       {currentIndex === questions.length - 1 ? "Finish Quiz" : "Next Question"}
                     </Button>
                   )}
@@ -251,19 +265,21 @@ export default function NoteQuiz() {
               <Card className="text-center py-16 px-6">
                 <CardContent className="space-y-6 flex flex-col items-center">
                   <div className="w-24 h-24 rounded-full bg-primary/10 flex items-center justify-center mb-2">
-                    <span className="text-4xl font-bold text-primary">{Math.round((score / questions.length) * 100)}%</span>
+                    <span className="text-4xl font-bold text-primary">
+                      {Math.round((score / questions.length) * 100)}%
+                    </span>
                   </div>
-                  
+
                   <div>
                     <h2 className="text-3xl font-bold mb-2">Quiz Complete!</h2>
                     <p className="text-muted-foreground text-lg">
                       You scored {score} out of {questions.length} questions correctly.
                     </p>
                   </div>
-                  
+
                   <div className="flex flex-col sm:flex-row gap-4 pt-6">
-                    <Button 
-                      variant="outline" 
+                    <Button
+                      variant="outline"
                       onClick={() => {
                         setCurrentIndex(0);
                         setScore(0);
